@@ -105,12 +105,16 @@ if [[ -e /etc/x-ui/x-ui.db || -d /usr/local/x-ui ]]; then
   echo "BLOCKED: existing x-ui/lucx-ui installation detected; do not install over it."
   conflicts=1
 fi
-for svc in x-ui xray sing-box hysteria-server wg-quick@awg0; do
+for svc in nginx x-ui xray sing-box hysteria-server wg-quick@awg0; do
   if systemctl is-active --quiet "$svc" 2>/dev/null; then
-    echo "BLOCKED: active VPN service detected: $svc"
+    echo "BLOCKED: active NGINX/VPN service detected: $svc"
     conflicts=1
   fi
 done
+if [[ -d /etc/nginx/sites-enabled ]] && find /etc/nginx/sites-enabled -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print -quit 2>/dev/null | grep -q .; then
+  echo "BLOCKED: enabled NGINX virtual hosts exist; preserve and review them before migration."
+  conflicts=1
+fi
 if ss -H -lntp 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END {exit !found}'; then
   echo "BLOCKED: TCP/443 is already occupied. Existing NGINX/Xray must be migrated with a reviewed config plan."
   ss -H -lntp 2>/dev/null | awk '$4 ~ /:443$/'
