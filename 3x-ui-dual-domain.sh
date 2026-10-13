@@ -1321,6 +1321,79 @@ cmd_install() {
     exit 1
   fi
 
+  # DEILJA-SAFE-INSTALL: before any package/service/firewall changes, capture
+  # the existing state and refuse to overlay an existing production stack.
+  # This installer builds its own nginx SNI router on TCP/443; it cannot safely
+  # guess how to merge an unrelated live nginx/xray configuration.
+  local preflight_stamp preflight_dir preflight_conflict svc
+  preflight_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  preflight_dir="/root/3x-ui-dual-domain-backups/${preflight_stamp}"
+  mkdir -p "$preflight_dir"
+  chmod 700 /root/3x-ui-dual-domain-backups "$preflight_dir" 2>/dev/null || true
+
+  {
+    echo "timestamp_utc=$preflight_stamp"
+    echo "host=$(hostname -f 2>/dev/null || hostname)"
+    echo "=== services ==="
+    for svc in nginx x-ui xray sing-box hysteria-server wg-quick@awg0; do
+      printf '%s: ' "$svc"
+      systemctl is-active "$svc" 2>/dev/null || true
+    done
+    echo "=== listeners ==="
+    ss -H -lntup 2>/dev/null || true
+    echo "=== nginx syntax ==="
+    if command -v nginx >/dev/null 2>&1; then nginx -t 2>&1 || true; fi
+    echo "=== firewall ==="
+    if command -v ufw >/dev/null 2>&1; then ufw status verbose 2>&1 || true; fi
+  } > "$preflight_dir/preflight.txt"
+
+  # Preserve existing configuration trees with their absolute paths.
+  for preflight_path in /etc/nginx /etc/x-ui /usr/local/x-ui /etc/letsencrypt /etc/ufw /etc/fail2ban /etc/systemd/system; do
+    if [[ -e "$preflight_path" ]]; then
+      cp -a --parents "$preflight_path" "$preflight_dir/" 2>/dev/null || {
+        echo "ОШИБКА: не удалось сохранить $preflight_path."
+        echo "Установка остановлена. Бэкап: $preflight_dir"
+        exit 1
+      }
+    fi
+  done
+  if [[ -f /etc/x-ui/x-ui.db ]] && command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 /etc/x-ui/x-ui.db ".backup '$preflight_dir/x-ui.db'" 2>/dev/null || {
+      cp -a /etc/x-ui/x-ui.db "$preflight_dir/x-ui.db" || {
+        echo "ОШИБКА: не удалось сохранить базу x-ui. Установка остановлена."
+        exit 1
+      }
+    }
+  fi
+  echo "Предварительный отчёт и резервная копия: $preflight_dir"
+
+  preflight_conflict=0
+  if [[ -e /etc/x-ui/x-ui.db || -d /usr/local/x-ui ]]; then
+    echo "БЛОКИРОВКА: обнаружена существующая x-ui/lucx-ui."
+    preflight_conflict=1
+  fi
+  for svc in nginx x-ui xray sing-box hysteria-server wg-quick@awg0; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+      echo "БЛОКИРОВКА: активная служба $svc. Нельзя безопасно накатывать чистую установку."
+      preflight_conflict=1
+    fi
+  done
+  if ss -H -lntp 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END {exit !found}'; then
+    echo "БЛОКИРОВКА: TCP/443 уже занят:"
+    ss -H -lntp 2>/dev/null | awk '$4 ~ /:443$/'
+    preflight_conflict=1
+  fi
+  if [[ -d /etc/nginx/sites-enabled ]] && find /etc/nginx/sites-enabled -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -print -quit 2>/dev/null | grep -q .; then
+    echo "БЛОКИРОВКА: найдены включённые NGINX-сайты; требуется миграция конфигурации, а не чистая установка."
+    preflight_conflict=1
+  fi
+  if [[ "$preflight_conflict" -ne 0 ]]; then
+    echo "Установка отменена до изменений пакетов, firewall и сервисов."
+    echo "Бэкап сохранён: $preflight_dir"
+    echo "Для действующего сервера сначала требуется отдельный анализ/план миграции."
+    exit 3
+  fi
+
   # Логирование
   # v0.3.7: в лог попадают креды панели (username/password, hy2-ссылка с
   # auth-паролем, секретные пути подписок) — файл должен быть 600 с первого
