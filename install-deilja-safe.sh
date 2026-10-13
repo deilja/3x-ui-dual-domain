@@ -93,9 +93,9 @@ if [[ -d /etc/letsencrypt ]]; then cp -a --parents /etc/letsencrypt "$backup_dir
 if [[ -f /etc/x-ui/x-ui.db ]]; then
   sqlite3 /etc/x-ui/x-ui.db ".backup '$backup_dir/x-ui.db'" 2>/dev/null || cp -a /etc/x-ui/x-ui.db "$backup_dir/x-ui.db"
 fi
-tar -czf "$backup_dir/etc-configs.tar.gz" -C / "$(
-  find etc/nginx etc/x-ui etc/letsencrypt etc/ufw etc/fail2ban -maxdepth 0 -type d -printf '%p ' 2>/dev/null || true
-)" 2>/dev/null || true
+# The individual trees above are copied with --parents, which preserves their
+# absolute paths under backup_dir. Avoid packing a whitespace-joined find result
+# as a single tar operand (that silently creates an incomplete archive).
 echo "Backup created: $backup_dir"
 
 # Hard safety gate: this upstream installer is documented for clean Ubuntu
